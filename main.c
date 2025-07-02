@@ -3,25 +3,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <fcntl.h> 
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <sys/epoll.h>
+#include <pthread.h>
 
 #define PORT 8090
-#define MAX_CLIENTS 10
-#define BUFFER_SIZE 1024
+#define MAX_CLIENTS 20
+#define BUFFER_SIZE 10240
 #define MAX_EVENTS 10
-
-int webserver_fd, incoming_fd, epoll_fd;
-
-struct sockaddr_in web_address;
-int addrlen = sizeof(web_address);
-
-struct epoll_event event, events[MAX_EVENTS];
-int nevent;
-
-char buffer[BUFFER_SIZE] = {0};
+#define MAX_RESPONSE_SIZE 10240
+#define MAX_FILE_SIZE 10240
 
 typedef struct {
 	char method[8];
@@ -65,7 +59,7 @@ void parse_http_request(const char *raw_request, HttpRequest *req) {
 	}
 }
 
-void write_http_response(char *response_buffer, int status_code, const char *body) {
+void write_http_response(char *response_buffer, int status_code,const char *content_type, const char *body) {
 
 	const char *status_text;
 
@@ -84,64 +78,128 @@ void write_http_response(char *response_buffer, int status_code, const char *bod
 			response_buffer,
 			"HTTP/1.1 %d %s\r\n"
 			"Content-Length: %d\r\n"
-			"Content-Type: text/plain\r\n"
+			"Content-Type: %s\r\n"
 			"Connection: close\r\n"
 			"\r\n"
 			"%s",
-			status_code, status_text, content_length, body ? body : ""
+			status_code, status_text, content_length, content_type, body ? body : ""
 	       );
 
 }
 
-void send_http_response(int client_fd, const char *response_buffer) {
-    send(client_fd, response_buffer, strlen(response_buffer), 0);
+char *handle_get(HttpRequest *req) {
+
+	char fullpath[512];
+	int fd;
+	char *body;
+	int bytes_read, total_read = 0;
+
+	if (strcmp(req->path, "/") == 0) {
+		snprintf(fullpath, sizeof(fullpath), "./www/index.html");
+	} else {
+		snprintf(fullpath, sizeof(fullpath), "./www%s", req->path);
+	}
+
+	fd = open(fullpath, O_RDONLY);
+	if (fd < 0) {
+		return strdup("<html><body><h1>404 Not Found</h1></body></html>");
+	}
+
+	body = malloc(MAX_FILE_SIZE + 1);
+	if (!body) {
+		close(fd);
+		return strdup("<html><body><h1>500 Internal Server Error</h1></body></html>");
+	}
+
+	while (total_read < MAX_FILE_SIZE) {
+		bytes_read = read(fd, body + total_read, MAX_FILE_SIZE - total_read);
+		if (bytes_read <= 0) break; // EOF or error
+		total_read += bytes_read;
+	}
+	close(fd);
+
+	body[total_read] = '\0';
+	return body;
 }
 
-void handle_event(struct epoll_event ev) {
+char *handle_post(HttpRequest *req) {
 
-	if (ev.data.fd == webserver_fd) {
+    const char *template_start = "<html><body><h1>POST Received</h1><pre>";
+    const char *template_end = "</pre></body></html>";
 
-		if ((incoming_fd = accept(webserver_fd, (struct sockaddr *)&web_address, &addrlen)) < 0) {
-			perror("client connection accept failed");
-			close(webserver_fd);
-			exit(EXIT_FAILURE);
-		}
+    int response_size = strlen(template_start) + strlen(req->body) + strlen(template_end) + 1;
 
-		ev.events = EPOLLIN;
-		ev.data.fd = incoming_fd;
-		if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, incoming_fd, &event) == -1) {
-			perror("epoll client connection add failed");
-			close(webserver_fd);
-			exit(EXIT_FAILURE);
-		}
+    char *body = malloc(response_size);
+    if (!body) {
+        return strdup("<html><body><h1>500 Internal Server Error</h1></body></html>");
+    }
 
-		printf("Connection accepted: %s:%d\n", inet_ntoa(web_address.sin_addr), ntohs(web_address.sin_port));
+    snprintf(body, response_size, "%s%s%s", template_start, req->body, template_end);
+
+    return body;
+}
+
+
+char *handle_request(HttpRequest *req) {
+
+	char *body = NULL;
+	static char response[MAX_RESPONSE_SIZE];
+
+	if (strcmp(req->method, "GET") == 0) {
+
+		body = handle_get(req);
+		write_http_response(response, 200,"text/html",body);
 
 	} else {
 
-
-		int isd = ev.data.fd;
-		int readv = read(isd, buffer, BUFFER_SIZE - 1);
-
-		if (readv == 0) {
-
-
-			getpeername(isd, (struct sockaddr *)&web_address, &addrlen);
-			printf("Client Disconnected: %s:%d\n", inet_ntoa(web_address.sin_addr),ntohs(web_address.sin_port));
-			epoll_ctl(epoll_fd, EPOLL_CTL_DEL, isd, NULL);
-			close(isd);
-
-		} else {
-
-			buffer[readv] = '\0';
-			printf("Message: %s",buffer);
-			send(isd, "ACK\n",4,0);
-		}
+		body = strdup("<html><body><h1>400 Bad Request</h1></body></html>");
+		write_http_response(response, 400,"text/html", body);
 
 	}
+
+	free(body);
+	return response;
 }
 
+void* handle_client(void *arg) {
+
+	int client_fd = *(int *)arg;
+	free(arg);
+
+	char buffer[BUFFER_SIZE];
+
+	if (read(client_fd,buffer,BUFFER_SIZE-1) == -1) {
+		perror("client read error");
+		exit(EXIT_FAILURE);
+	}
+
+	HttpRequest nreq;
+	parse_http_request(buffer,&nreq);
+	printf("--- REQUEST-------------- \n%s\n%s\n%s\n%s\n",nreq.headers,nreq.method,nreq.path,nreq.body);
+
+	char* resp = handle_request(&nreq);
+	printf("--- RESPONSE -------------- \n%s\n",resp);
+
+	if (send(client_fd,resp,strlen(resp),0) == -1) {
+		perror("Response send error");
+		close(client_fd);
+		exit(EXIT_FAILURE);
+	}
+
+	printf("Response sent, connection closed \n");
+	close(client_fd);
+
+}
+
+int webserver_fd;
+
+struct sockaddr_in web_address;
+int addrlen = sizeof(web_address);
+
+pthread_t thread;
+
 int main() {
+
 
 	if ((webserver_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
 		perror("webserver socket creation failed");
@@ -158,43 +216,39 @@ int main() {
 		exit(EXIT_FAILURE);
 	}
 
-	if (listen(webserver_fd, 3) < 0) {
+	if (listen(webserver_fd, MAX_CLIENTS) < 0) {
 		perror("connection listen failed");
 		close(webserver_fd);
 		exit(EXIT_FAILURE);
 	}
 
-	if ((epoll_fd = epoll_create1(0)) == -1) {
-		perror("epoll initialization failed");
-		close(webserver_fd);
-		exit (EXIT_FAILURE);
-	}
+	printf("Listening on: %d \n",PORT);
 
-	event.events = EPOLLIN;
-	event.data.fd = webserver_fd;
-	if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, webserver_fd, &event) == -1) {
-		perror("epoll webserver add failed");
-		close(webserver_fd);
-		exit(EXIT_FAILURE);
-	}
+	while (1) {
 
-	while(1) {
+		int* incoming_fd = malloc(sizeof(int)); 
 
-		nevent = epoll_wait(epoll_fd, events, MAX_EVENTS, -1);
-
-		if (nevent == -1) {
-			perror("epoll wait failed");
+		if ((*incoming_fd = accept(webserver_fd, (struct sockaddr *)&web_address, &addrlen)) < 0) {
+			perror("client connection accept failed");
 			close(webserver_fd);
 			exit(EXIT_FAILURE);
 		}
 
-		for(int i = 0; i < nevent; i++) {
-			handle_event(events[i]);
+		printf("Connection accepted: %s:%d\n", inet_ntoa(web_address.sin_addr), ntohs(web_address.sin_port));
+
+		if(pthread_create(&thread,NULL,handle_client,incoming_fd)){
+			perror("Thread creation failed");
+			close(webserver_fd);
+			exit(EXIT_FAILURE);
 		}
+
+		pthread_detach(thread);
+
 	}
 
-
+	close(webserver_fd);
 	return 0;
+
 }
 
 
