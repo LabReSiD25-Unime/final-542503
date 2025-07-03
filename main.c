@@ -44,6 +44,20 @@ void add_key_value(const char *key, const char *value) {
 
 }
 
+int is_kv_stored(const char *key, const char *value) {
+
+	for (int i = 0; i < store_count; i++) {
+
+		if (strcmp(store[i].key, key) == 0 && strcmp(store[i].value, value) == 0) {
+			return 1;  
+		}
+
+	}
+
+	return 0; 
+}
+
+
 void parse_http_request(const char *raw_request, HttpRequest *req) {
 
 	memset(req, 0, sizeof(HttpRequest));
@@ -131,46 +145,49 @@ char *get_html_file(const char* path) {
 
 }
 
-void parse_form_data(const char *body) {
-	
+void parse_form_data(const char *body, const int duplicates) {
+
 	char pair[512];
 	char *p = strdup(body); 
 	char *tok = strtok(p, "&");
-	
+
 	while (tok != NULL) {
-		
+
 		char *eq = strchr(tok, '=');
-		
+
 		if (eq) {
-		
+
 			*eq = '\0';
 			const char *key = tok;
 			const char *value = eq + 1;
-			add_key_value(key, value);
-		
+			if (duplicates){
+				add_key_value(key, value);
+			} else if(!is_kv_stored(key,value)) {
+				add_key_value(key,value);
+			}
 		}
-		
+
 		tok = strtok(NULL, "&");
 	}
-	
+
 	free(p);
 }
 
 char *append_kv_to_html(const char *html) {
-	
+
 	char kv_html[2048];
 	strcpy(kv_html, "<h2>Saved Pairs:</h2><ul>");
 
 	for (int i = 0; i < store_count; i++) {
-	
+
 		strcat(kv_html, "<li>");
 		strcat(kv_html, store[i].key);
 		strcat(kv_html, ": ");
 		strcat(kv_html, store[i].value);
 		strcat(kv_html, "</li>");
-	
+
 	}
-	
+
 	strcat(kv_html, "</ul>");
 
 	char *final = malloc(strlen(html) + strlen(kv_html) + 1);
@@ -196,7 +213,7 @@ char *handle_get(HttpRequest *req) {
 
 char *handle_post(HttpRequest *req) {
 
-	parse_form_data(req->body);
+	parse_form_data(req->body,1);
 
 	char fullpath[512];
 
@@ -207,7 +224,7 @@ char *handle_post(HttpRequest *req) {
 	}
 
 	char *html = get_html_file(fullpath);   
-	
+
 	char *response = append_kv_to_html(html);
 
 	free(html);
@@ -215,6 +232,38 @@ char *handle_post(HttpRequest *req) {
 	return response;
 
 }
+
+char *handle_put(HttpRequest *req) {
+
+	parse_form_data(req->body, 0);
+
+	char fullpath[524];
+
+	char path_only[512];
+	int i = 0;
+	while (req->path[i] != '\0' && req->path[i] != '?' && i < sizeof(path_only) - 1) {
+		path_only[i] = req->path[i];
+		i++;
+	}
+	path_only[i] = '\0';
+
+	printf("---PRINT: %s \n",fullpath);
+
+	if (strcmp(path_only, "/") == 0) {
+		snprintf(fullpath, sizeof(fullpath), "./www/index.html");
+	} else {
+		snprintf(fullpath, sizeof(fullpath), "./www%s", path_only);
+	}
+
+	char *html = get_html_file(fullpath);
+
+	char *response = append_kv_to_html(html);
+
+	free(html);
+
+	return response;
+}
+
 
 char *handle_request(HttpRequest *req) {
 
@@ -229,6 +278,11 @@ char *handle_request(HttpRequest *req) {
 	} else if (strcmp(req->method,"POST") == 0) {
 
 		body = handle_post(req);
+		write_http_response(response,200,"text/html",body);
+
+	} else if (strcmp(req->method,"PUT") == 0) {
+
+		body = handle_put(req);
 		write_http_response(response,200,"text/html",body);
 
 	} else {
