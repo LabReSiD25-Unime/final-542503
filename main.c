@@ -16,6 +16,7 @@
 #define MAX_EVENTS 10
 #define MAX_RESPONSE_SIZE 10240
 #define MAX_FILE_SIZE 10240
+#define MAX_KV_PAIRS 100
 
 typedef struct {
 	char method[8];
@@ -24,6 +25,24 @@ typedef struct {
 	char headers[1024];
 	char body[2048];
 } HttpRequest;
+
+struct KeyValue {
+	char key[64];
+	char value[256];
+};
+
+struct KeyValue store[MAX_KV_PAIRS];
+int store_count = 0;
+
+void add_key_value(const char *key, const char *value) {
+
+	if (store_count >= MAX_KV_PAIRS) return;
+
+	strncpy(store[store_count].key, key, sizeof(store[store_count].key) - 1);
+	strncpy(store[store_count].value, value, sizeof(store[store_count].value) - 1);
+	store_count++;
+
+}
 
 void parse_http_request(const char *raw_request, HttpRequest *req) {
 
@@ -87,12 +106,83 @@ void write_http_response(char *response_buffer, int status_code,const char *cont
 
 }
 
-char *handle_get(HttpRequest *req) {
+char *get_html_file(const char* path) {
 
-	char fullpath[512];
 	int fd;
 	char *body;
 	int bytes_read, total_read = 0;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		return strdup("<html><body><h1>404 Not Found</h1></body></html>");
+	}
+
+	body = malloc(MAX_FILE_SIZE + 1);
+
+	while (total_read < MAX_FILE_SIZE) {
+		bytes_read = read(fd, body + total_read, MAX_FILE_SIZE - total_read);
+		if (bytes_read <= 0) break; 
+		total_read += bytes_read;
+	}
+	close(fd);
+
+	body[total_read] = '\0';
+	return body;
+
+}
+
+void parse_form_data(const char *body) {
+	
+	char pair[512];
+	char *p = strdup(body); 
+	char *tok = strtok(p, "&");
+	
+	while (tok != NULL) {
+		
+		char *eq = strchr(tok, '=');
+		
+		if (eq) {
+		
+			*eq = '\0';
+			const char *key = tok;
+			const char *value = eq + 1;
+			add_key_value(key, value);
+		
+		}
+		
+		tok = strtok(NULL, "&");
+	}
+	
+	free(p);
+}
+
+char *append_kv_to_html(const char *html) {
+	
+	char kv_html[2048];
+	strcpy(kv_html, "<h2>Saved Pairs:</h2><ul>");
+
+	for (int i = 0; i < store_count; i++) {
+	
+		strcat(kv_html, "<li>");
+		strcat(kv_html, store[i].key);
+		strcat(kv_html, ": ");
+		strcat(kv_html, store[i].value);
+		strcat(kv_html, "</li>");
+	
+	}
+	
+	strcat(kv_html, "</ul>");
+
+	char *final = malloc(strlen(html) + strlen(kv_html) + 1);
+	strcpy(final, html);
+	strcat(final, kv_html);
+
+	return final;
+}
+
+char *handle_get(HttpRequest *req) {
+
+	char fullpath[512];
 
 	if (strcmp(req->path, "/") == 0) {
 		snprintf(fullpath, sizeof(fullpath), "./www/index.html");
@@ -100,45 +190,31 @@ char *handle_get(HttpRequest *req) {
 		snprintf(fullpath, sizeof(fullpath), "./www%s", req->path);
 	}
 
-	fd = open(fullpath, O_RDONLY);
-	if (fd < 0) {
-		return strdup("<html><body><h1>404 Not Found</h1></body></html>");
-	}
+	return get_html_file(fullpath);	
 
-	body = malloc(MAX_FILE_SIZE + 1);
-	if (!body) {
-		close(fd);
-		return strdup("<html><body><h1>500 Internal Server Error</h1></body></html>");
-	}
-
-	while (total_read < MAX_FILE_SIZE) {
-		bytes_read = read(fd, body + total_read, MAX_FILE_SIZE - total_read);
-		if (bytes_read <= 0) break; // EOF or error
-		total_read += bytes_read;
-	}
-	close(fd);
-
-	body[total_read] = '\0';
-	return body;
 }
 
 char *handle_post(HttpRequest *req) {
 
-    const char *template_start = "<html><body><h1>POST Received</h1><pre>";
-    const char *template_end = "</pre></body></html>";
+	parse_form_data(req->body);
 
-    int response_size = strlen(template_start) + strlen(req->body) + strlen(template_end) + 1;
+	char fullpath[512];
 
-    char *body = malloc(response_size);
-    if (!body) {
-        return strdup("<html><body><h1>500 Internal Server Error</h1></body></html>");
-    }
+	if (strcmp(req->path, "/") == 0) {
+		snprintf(fullpath, sizeof(fullpath), "./www/index.html");
+	} else {
+		snprintf(fullpath, sizeof(fullpath), "./www%s", req->path);
+	}
 
-    snprintf(body, response_size, "%s%s%s", template_start, req->body, template_end);
+	char *html = get_html_file(fullpath);   
+	
+	char *response = append_kv_to_html(html);
 
-    return body;
+	free(html);
+
+	return response;
+
 }
-
 
 char *handle_request(HttpRequest *req) {
 
@@ -149,6 +225,11 @@ char *handle_request(HttpRequest *req) {
 
 		body = handle_get(req);
 		write_http_response(response, 200,"text/html",body);
+
+	} else if (strcmp(req->method,"POST") == 0) {
+
+		body = handle_post(req);
+		write_http_response(response,200,"text/html",body);
 
 	} else {
 
