@@ -33,7 +33,6 @@ char *get_html_file(const char* path) {
 
 int parse_form_data(const char *body, const int op) {
 
-	char pair[512];
 	char *p = strdup(body); 
 	char *tok = strtok(p, "&");
 
