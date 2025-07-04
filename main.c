@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,7 +6,6 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <sys/epoll.h>
 #include <pthread.h>
 
 #define PORT 8090
@@ -57,6 +55,23 @@ int is_kv_stored(const char *key, const char *value) {
 	return 0; 
 }
 
+int delete_kv_pair(const char *key, const char *value) {
+
+	int found = 0;
+
+	for (int i = 0; i < store_count; i++) {
+		if (strcmp(store[i].key, key) == 0 && strcmp(store[i].value, value) == 0) {
+			for (int j = i; j < store_count - 1; j++) {
+				store[j] = store[j + 1];
+			}
+			store_count--;
+			found = 1;
+			break;
+		}
+	}
+
+	return found;
+}
 
 void parse_http_request(const char *raw_request, HttpRequest *req) {
 
@@ -65,32 +80,41 @@ void parse_http_request(const char *raw_request, HttpRequest *req) {
 	sscanf(raw_request, "%7s %255s %15s", req->method, req->path, req->version);
 
 	const char *header_start = strstr(raw_request, "\r\n");
-
-	if (header_start) {
-		header_start += 2;
-	} else {
-		return;
-	}
+	if (!header_start) return;
+	header_start += 2;
 
 	const char *body_start = strstr(raw_request, "\r\n\r\n");
 
-	if (body_start) {
-
+	if (body_start && body_start > header_start) {
 		int header_len = (int)(body_start - header_start);
-
 		if (header_len > 1023) header_len = 1023;
 
 		strncpy(req->headers, header_start, header_len);
 		req->headers[header_len] = '\0';
 
-		strcpy(req->body, body_start + 4);
+		
+		int content_length = 0;
+		const char *cl = strcasestr(req->headers, "Content-Length:");
+		if (cl) {
+			cl += strlen("Content-Length:");
+			while (*cl == ' ') cl++; 
+			content_length = atoi(cl);
+		}
+
+		if (content_length > 0 && content_length < sizeof(req->body)) {
+			strncpy(req->body, body_start + 4, content_length);
+			req->body[content_length] = '\0';
+		} else {
+			req->body[0] = '\0';
+		}
 
 	} else {
-
 		strncpy(req->headers, header_start, 1023);
-
+		req->headers[1023] = '\0';
+		req->body[0] = '\0';
 	}
 }
+
 
 void write_http_response(char *response_buffer, int status_code,const char *content_type, const char *body) {
 
@@ -145,11 +169,13 @@ char *get_html_file(const char* path) {
 
 }
 
-void parse_form_data(const char *body, const int duplicates) {
+int parse_form_data(const char *body, const int op) {
 
 	char pair[512];
 	char *p = strdup(body); 
 	char *tok = strtok(p, "&");
+
+	int flag = 0;
 
 	while (tok != NULL) {
 
@@ -160,10 +186,14 @@ void parse_form_data(const char *body, const int duplicates) {
 			*eq = '\0';
 			const char *key = tok;
 			const char *value = eq + 1;
-			if (duplicates){
+			if (op == 1){
 				add_key_value(key, value);
-			} else if(!is_kv_stored(key,value)) {
+				flag = 1;
+			} else if(op == 0 && !is_kv_stored(key,value)) {
 				add_key_value(key,value);
+				flag = 1;
+			} else if(op==2){
+				flag = delete_kv_pair(key, value);
 			}
 		}
 
@@ -171,6 +201,7 @@ void parse_form_data(const char *body, const int duplicates) {
 	}
 
 	free(p);
+	return flag;
 }
 
 char *append_kv_to_html(const char *html) {
@@ -233,9 +264,13 @@ char *handle_post(HttpRequest *req) {
 
 }
 
-char *handle_put(HttpRequest *req) {
+char *handle_put(HttpRequest *req,int* flag) {
 
-	parse_form_data(req->body, 0);
+	*flag = parse_form_data(req->body, 0);
+	
+	if (!*flag) {
+		return NULL;	
+	}
 
 	char fullpath[524];
 
@@ -246,8 +281,6 @@ char *handle_put(HttpRequest *req) {
 		i++;
 	}
 	path_only[i] = '\0';
-
-	printf("---PRINT: %s \n",fullpath);
 
 	if (strcmp(path_only, "/") == 0) {
 		snprintf(fullpath, sizeof(fullpath), "./www/index.html");
@@ -264,6 +297,33 @@ char *handle_put(HttpRequest *req) {
 	return response;
 }
 
+char *handle_delete(HttpRequest *req,int* flag) {
+
+	*flag = parse_form_data(req->body,2);
+
+	if (!*flag) {
+		return NULL;	
+	}
+
+	char fullpath[512];
+
+	if (strcmp(req->path, "/") == 0) {
+		snprintf(fullpath, sizeof(fullpath), "./www/index.html");
+	} else {
+		snprintf(fullpath, sizeof(fullpath), "./www%s", req->path);
+	}
+
+	char *html = get_html_file(fullpath);   
+
+	char *response = append_kv_to_html(html);
+
+	free(html);
+
+	return response;
+
+}
+
+
 
 char *handle_request(HttpRequest *req) {
 
@@ -278,21 +338,34 @@ char *handle_request(HttpRequest *req) {
 	} else if (strcmp(req->method,"POST") == 0) {
 
 		body = handle_post(req);
-		write_http_response(response,200,"text/html",body);
+		write_http_response(response,201,"text/html",body);
 
 	} else if (strcmp(req->method,"PUT") == 0) {
+		
+		int flg;
+		
+		body = handle_put(req,&flg);
 
-		body = handle_put(req);
-		write_http_response(response,200,"text/html",body);
+		write_http_response(response,flg ? 201  : 204,"text/html",body);
 
+	} else if (strcmp(req->method,"DELETE") == 0) {
+		
+		int flg;
+
+		body = handle_delete(req,&flg);
+		write_http_response(response,flg ? 201  : 204,"text/html",body);
+	
 	} else {
 
 		body = strdup("<html><body><h1>400 Bad Request</h1></body></html>");
 		write_http_response(response, 400,"text/html", body);
 
 	}
-
-	free(body);
+	
+	if (body != NULL) {
+		free(body);
+	}
+	
 	return response;
 }
 
@@ -308,9 +381,11 @@ void* handle_client(void *arg) {
 		exit(EXIT_FAILURE);
 	}
 
+	printf("--- RAW ------------ \n%s\n",buffer);
+
 	HttpRequest nreq;
 	parse_http_request(buffer,&nreq);
-	printf("--- REQUEST-------------- \n%s\n%s\n%s\n%s\n",nreq.headers,nreq.method,nreq.path,nreq.body);
+	printf("--- REQUEST-------------- \n%s\n%s\n%s\n%s\n%s\n",nreq.method,nreq.path,nreq.version,nreq.headers,nreq.body);
 
 	char* resp = handle_request(&nreq);
 	printf("--- RESPONSE -------------- \n%s\n",resp);
