@@ -3,6 +3,8 @@
 
 #define MAX_KV_PAIRS 100
 
+#include <pthread.h>
+
 struct KeyValue {
     char key[64];
     char value[256];
@@ -10,6 +12,7 @@ struct KeyValue {
 
 extern struct KeyValue store[MAX_KV_PAIRS];
 extern int store_count;
+extern pthread_mutex_t store_mutex;
 
 void add_key_value(const char *key, const char *value);
 int is_kv_stored(const char *key, const char *value);

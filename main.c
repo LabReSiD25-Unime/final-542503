@@ -17,7 +17,7 @@
 int webserver_fd;
 
 struct sockaddr_in web_address;
-int addrlen = sizeof(web_address);
+socklen_t addrlen = sizeof(web_address);
 
 pthread_t thread;
 
@@ -51,11 +51,11 @@ void* handle_client(void *arg) {
 	printf("Response sent, connection closed \n");
 	close(client_fd);
 
+	return NULL;
 }
 
 int main() {
-
-
+	
 	if ((webserver_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
 		perror("webserver socket creation failed");
 		exit(EXIT_FAILURE);
