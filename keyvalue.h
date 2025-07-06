@@ -12,6 +12,7 @@ struct KeyValue {
 
 extern struct KeyValue store[MAX_KV_PAIRS];
 extern int store_count;
+
 extern pthread_mutex_t store_mutex;
 
 void add_key_value(const char *key, const char *value);

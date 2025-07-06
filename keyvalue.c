@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
 #define MAX_KV_PAIRS 100
 
@@ -14,8 +15,12 @@ pthread_mutex_t store_mutex = PTHREAD_MUTEX_INITIALIZER;
 void add_key_value(const char *key, const char *value) {
 	
 	pthread_mutex_lock(&store_mutex);
-
-	if (store_count >= MAX_KV_PAIRS) return;
+        
+        //aggiungi una coppia chiave-valore, se possibile
+	if (store_count >= MAX_KV_PAIRS) {
+	                pthread_mutex_unlock(&store_mutex);  
+	                return;
+        }
 
 	strncpy(store[store_count].key, key, sizeof(store[store_count].key) - 1);
 	strncpy(store[store_count].value, value, sizeof(store[store_count].value) - 1);
@@ -28,10 +33,12 @@ void add_key_value(const char *key, const char *value) {
 int is_kv_stored(const char *key, const char *value) {
 	
 	pthread_mutex_lock(&store_mutex);
-
+        
+        //cerca una coppia chiave-valore nell'array
 	for (int i = 0; i < store_count; i++) {
 
 		if (strcmp(store[i].key, key) == 0 && strcmp(store[i].value, value) == 0) {
+		        pthread_mutex_unlock(&store_mutex);
 			return 1;  
 		}
 
@@ -43,9 +50,10 @@ int is_kv_stored(const char *key, const char *value) {
 }
 
 int delete_kv_pair(const char *key, const char *value) {
-
+  
 	pthread_mutex_lock(&store_mutex);
-
+        
+        //trovauna coppia chiave-valore e muovi le coppie successive verso sinistra per cancellarla
 	int found = 0;
 
 	for (int i = 0; i < store_count; i++) {
@@ -65,12 +73,15 @@ int delete_kv_pair(const char *key, const char *value) {
 }
 
 char *append_kv_to_html(const char *html) {
-
+        
+        //aggiungi a un documento html una lista che mostra le coppie chiave-valore
+        
 	char kv_html[2048];
 	strcpy(kv_html, "<h2>Saved Pairs:</h2><ul>");
 	
 	pthread_mutex_lock(&store_mutex);
-
+        
+        //leggi la lista e aggiungi ogni coppia
 	for (int i = 0; i < store_count; i++) {
 
 		strcat(kv_html, "<li>");
@@ -82,9 +93,10 @@ char *append_kv_to_html(const char *html) {
 	}
 	
 	pthread_mutex_unlock(&store_mutex);
-
+        
 	strcat(kv_html, "</ul>");
-
+        
+        //genera il documento finalizzato
 	char *final = malloc(strlen(html) + strlen(kv_html) + 1);
 	strcpy(final, html);
 	strcat(final, kv_html);
