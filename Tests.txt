@@ -1,0 +1,17 @@
+### Test PUT
+curl -X PUT http://localhost:8090/testform.html -d "first_name=test3&last_name=test4"
+
+### Test DELETE
+curl -X PUT http://localhost:8090/testform.html -d "first_name=test3&last_name=test4"
+
+curl -X DELETE http://localhost:8090/testform.html -d "first_name=test3&last_name=test4"
+
+### Test BAD REQUEST
+curl -X OPTIONS http://localhost:8090/testform.html
+
+### Test Concorrenza
+curl -X POST http://localhost:8090/testform.html -d"first_name=test1&last_name=test2&age=22" &
+curl -X PUT http://localhost:8090/testform.html -d "first_name=test1&last_name=test2&age=22" &
+curl -X DELETE http://localhost:8090/testform.html -d "first_name=test1&last_name=test2&age=22" &
+wait
+
